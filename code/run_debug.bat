@@ -1,0 +1,3 @@
+@echo off
+echo Launch game code in Visual Studio...
+devenv ..\..\build\win32_handmade.exe

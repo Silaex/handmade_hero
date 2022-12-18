@@ -1,0 +1,3 @@
+@echo off
+echo Game is running...
+..\..\build\win32_handmade.exe
