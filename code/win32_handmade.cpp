@@ -29,8 +29,26 @@ struct win32_offscreen_buffer
 global_variable bool Running;
 global_variable win32_offscreen_buffer GlobalBackBuffer;
 
+struct win32_window_dimension {
+	int Width;
+	int Height;
+};
+
+win32_window_dimension
+Win32GetWindowDimension(HWND Window)
+{
+	win32_window_dimension Result;
+
+	RECT ClientRect;
+	GetClientRect(Window, &ClientRect);
+	Result.Width = ClientRect.right - ClientRect.left;
+	Result.Height = ClientRect.bottom - ClientRect.top;
+
+	return(Result);
+}
+
 internal void
-RenderWeirdGradient(win32_offscreen_buffer Buffer, int xOffset, int yOffset)
+RenderWeirdGradient(win32_offscreen_buffer Buffer, int BlueOffset, int GreenOffset, int RedOffset)
 {
 	uint8 *Row = (uint8 *)Buffer.BitmapMemory;
 
@@ -39,11 +57,11 @@ RenderWeirdGradient(win32_offscreen_buffer Buffer, int xOffset, int yOffset)
 		uint32 *Pixel = (uint32 *)Row;
 		for (int X = 0; X < Buffer.BitmapWidth; ++X)
 		{
-			uint8 Blue = (X + xOffset) * Y;
-			uint8 Green = (Y + yOffset) * X;
+			uint8 Blue = (X + BlueOffset);
+			uint8 Green = (Y + GreenOffset);
+			uint8 Red = (Y + X + RedOffset);
 
-			*Pixel = ((Green << 8) | Blue);
-			++Pixel;
+			*Pixel++ = ((Red << 16) | (Green << 8) | Blue);
 		}
 
 		Row += Buffer.Pitch;
@@ -81,20 +99,19 @@ Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 }
 
 internal void
-Win32DisplayBufferToWindow(HDC DeviceContext, RECT ClientRect, 
+Win32DisplayBufferToWindow(HDC DeviceContext, 
+							int WindowWidth, int WindowHeight, 
 							win32_offscreen_buffer Buffer,
-							int X, int Y, int Width, int Height)
+							int X, int Y)
 {
 
-	int WindowWidth = ClientRect.right - ClientRect.left;
-	int WindowHeight = ClientRect.bottom - ClientRect.top; 
 	StretchDIBits(DeviceContext,
 					/*
 					X, Y, Width, Height
 					X, Y, Width, Height
 					*/
-					0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
 					0, 0, WindowWidth, WindowHeight,
+					0, 0, Buffer.BitmapWidth, Buffer.BitmapHeight,
 	  				Buffer.BitmapMemory,
 	  				&Buffer.BitmapInfo,
 	  				DIB_RGB_COLORS, SRCCOPY);
@@ -112,11 +129,6 @@ Win32MainWindowCallback(HWND Window,
 	{
 		case WM_SIZE:
 		{
-			RECT ClientRect;
-			GetClientRect(Window, &ClientRect);
-			int Width = ClientRect.right - ClientRect.left;
-			int Height = ClientRect.bottom - ClientRect.top;
-			Win32ResizeDIBSection(&GlobalBackBuffer, Width, Height);
 		} break;
 
 		case WM_DESTROY:
@@ -127,7 +139,7 @@ Win32MainWindowCallback(HWND Window,
 		case WM_ACTIVATEAPP:
 		{
 			OutputDebugStringA("WM_ACTIVEAPP\n");
-		}break;
+		}break;	
 
 		case WM_CLOSE:
 		{
@@ -145,10 +157,8 @@ Win32MainWindowCallback(HWND Window,
 			int Width = Paint.rcPaint.right - Paint.rcPaint.left;
 			int Height = Paint.rcPaint.bottom - Paint.rcPaint.top;
 
-			RECT ClientRect;
-			GetClientRect(Window, &ClientRect);
-
-			Win32DisplayBufferToWindow(DeviceContext, ClientRect, GlobalBackBuffer, X, Y, Width, Height);
+			win32_window_dimension WDimension = Win32GetWindowDimension(Window);
+			Win32DisplayBufferToWindow(DeviceContext, WDimension.Width, WDimension.Height, GlobalBackBuffer, X, Y);
 			EndPaint(Window, &Paint);
 		}break;
 
@@ -169,17 +179,20 @@ int CALLBACK WinMain(
 	int nCmdShow
 )
 {
-	WNDCLASS WindowClass = {0};
+	WNDCLASSA WindowClass = {};
+
+	Win32ResizeDIBSection(&GlobalBackBuffer, 1280, 720);
 
 	WindowClass.style = CS_OWNDC;
   	WindowClass.lpfnWndProc = Win32MainWindowCallback;
   	WindowClass.hInstance = Instance;
 //  	WindowClass.hIcon;
+//		It will have an error at this place on VSCODE
+//		[a value of type "const char *" cannot be 
+//		assigned to an entity of type "LPCWSTR"]
   	WindowClass.lpszClassName = "HandmadeHeroWindowClass";
 
-  	ATOM regClass = RegisterClass(&WindowClass);
-
-  	if(regClass)
+  	if(RegisterClassA(&WindowClass))
   	{
   		HWND Window = 
   			CreateWindowExA(
@@ -199,8 +212,9 @@ int CALLBACK WinMain(
   			);
   		if(Window)
   		{
-  			int xOffset = 0;
-  			int yOffset = 0;
+  			int BlueOffset = 0;
+  			int GreenOffset = 0;
+			int RedOffset = 0;
 
   			Running = true;
   			while (Running)
@@ -216,18 +230,16 @@ int CALLBACK WinMain(
   					TranslateMessage(&Message);
   					DispatchMessageA(&Message);
   				}
-  				RenderWeirdGradient(GlobalBackBuffer, xOffset, yOffset);
+  				RenderWeirdGradient(GlobalBackBuffer, BlueOffset, GreenOffset, RedOffset);
 
   				HDC DeviceContext = GetDC(Window);
-  				RECT ClientRect;
-  				GetClientRect(Window, &ClientRect);
-  				int WindowWidth = ClientRect.right - ClientRect.left;
-				int WindowHeight = ClientRect.bottom - ClientRect.top;
-				Win32DisplayBufferToWindow(DeviceContext, ClientRect, GlobalBackBuffer, 0, 0, WindowWidth, WindowHeight);
+  				win32_window_dimension WDimension = Win32GetWindowDimension(Window);
+				Win32DisplayBufferToWindow(DeviceContext, WDimension.Width, WDimension.Height, GlobalBackBuffer, 0, 0);
 				ReleaseDC(Window, DeviceContext);
 
-  				++xOffset;
-  				yOffset += 2;
+  				++BlueOffset;
+  				GreenOffset += 2;
+				++RedOffset;
   			}
 
   		} 
