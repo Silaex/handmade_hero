@@ -30,6 +30,7 @@ struct win32_offscreen_buffer
 
 global_variable bool Running;
 global_variable win32_offscreen_buffer GlobalBackBuffer;
+global_variable LPDIRECTSOUNDBUFFER GlobalSecondaryBuffer;
 
 struct win32_window_dimension {
 	int Width;
@@ -91,9 +92,9 @@ Win32InitDSound(HWND Window, int32 SamplesPerSecond, int32 BufferSize)
 			WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
 			WaveFormat.nChannels = 2;
 			WaveFormat.nSamplesPerSec = SamplesPerSecond;
-			WaveFormat.nBlockAlign = (WaveFormat.nChannels*WaveFormat.wBitsPerSample) / 8;
-			WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec*WaveFormat.nAvgBytesPerSec;
 			WaveFormat.wBitsPerSample = 16;
+			WaveFormat.nBlockAlign = (WaveFormat.nChannels*WaveFormat.wBitsPerSample) / 8;
+			WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec*WaveFormat.nBlockAlign;
 			WaveFormat.cbSize = 0;
 
 			if(SUCCEEDED(DirectSound->SetCooperativeLevel(Window, DSSCL_PRIORITY)))
@@ -103,7 +104,8 @@ Win32InitDSound(HWND Window, int32 SamplesPerSecond, int32 BufferSize)
 				BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
 
 				LPDIRECTSOUNDBUFFER PrimaryBuffer;
-				if(SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0)))
+				HRESULT BufferCreation = DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0);	
+				if(SUCCEEDED(BufferCreation))
 				{
 					if(SUCCEEDED(PrimaryBuffer->SetFormat(&WaveFormat)))
 					{
@@ -131,14 +133,14 @@ Win32InitDSound(HWND Window, int32 SamplesPerSecond, int32 BufferSize)
 			BufferDescription.dwBufferBytes = BufferSize;
 			BufferDescription.lpwfxFormat = &WaveFormat;
 
-			LPDIRECTSOUNDBUFFER SecondaryBuffer;
-			if(SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &SecondaryBuffer, 0)))
+			HRESULT BufferCreation = DirectSound->CreateSoundBuffer(&BufferDescription, &GlobalSecondaryBuffer, 0);
+			if(SUCCEEDED(BufferCreation))
 			{
-				OutputDebugStringA("Buffers created successfully");
+				OutputDebugStringA("Buffers created successfully\n");
 			}
 			else
 			{
-				OutputDebugStringA("Buffers not created successfully");
+				OutputDebugStringA("Buffers not created successfully\n");
 			}
 			// Start it playing!
 		} 
@@ -177,7 +179,7 @@ RenderWeirdGradient(win32_offscreen_buffer *Buffer, int BlueOffset, int GreenOff
 		for (int X = 0; X < Buffer->BitmapWidth; ++X)
 		{
 			uint8 Blue = (X + BlueOffset) ;
-			uint8 Green = (Y - X + GreenOffset);
+			uint8 Green = (Y + GreenOffset);
 			uint8 Red = (Y + X + RedOffset);
 
 			*Pixel++ = ((Red << 16) | (Green << 8) | Blue);
@@ -191,7 +193,7 @@ internal void
 Win32ResizeDIBSection(win32_offscreen_buffer *Buffer, int Width, int Height)
 {
 	// TODO(Alexis): Bulletproof this.
-	// Maybe don't free first, free after, teh free first if that fails
+	// Maybe don't free first, free after, the free first if that fails
 
 	if (Buffer->BitmapMemory)
 	{
@@ -384,11 +386,22 @@ int CALLBACK WinMain(
   			);
   		if(Window)
   		{
-  			int BlueOffset = 0;
+			HDC DeviceContext = GetDC(Window);
+			int BlueOffset = 0;
   			int GreenOffset = 0;
 			int RedOffset = 0;
 
-			Win32InitDSound(Window, 48000, 48000*sizeof(int16));
+  			int SamplesPerSecond = 44100;
+			int Tone = 256;
+			int16 ToneVolume = 1000;
+			uint32 RunningSampleIndex = 0;
+			int SquareWavePeriod = SamplesPerSecond/Tone;
+			int HalfSquaredWavePeriod = SquareWavePeriod/2;
+			int BytesPerSample = sizeof(int16)*2;
+			int32 SecondaryBufferSize = SamplesPerSecond*BytesPerSample;
+
+			Win32InitDSound(Window, SamplesPerSecond, SecondaryBufferSize);
+			GlobalSecondaryBuffer->Play(0, 0, DSBPLAY_LOOPING);
 
   			Running = true;
   			while (Running)
@@ -411,9 +424,13 @@ int CALLBACK WinMain(
 					++ControllerIndex)
 				{
 					XINPUT_STATE ControllerState;
-					if(XInputGetState(ControllerIndex, &ControllerState) == ERROR_SUCCESS)
+					ZeroMemory(&ControllerState, sizeof(XINPUT_STATE));
+
+					DWORD Result = XInputGetState(ControllerIndex, &ControllerState);
+					if(Result == ERROR_SUCCESS)
 					{
 						// Connected
+						OutputDebugStringA("CONNECTED");
 						XINPUT_GAMEPAD *Pad = &ControllerState.Gamepad;
 
 						bool Up 			= (Pad->wButtons & XINPUT_GAMEPAD_DPAD_UP);
@@ -431,6 +448,7 @@ int CALLBACK WinMain(
 
 						int16 StickX = Pad->sThumbLX;
 						int16 StickY = Pad->sThumbLY;
+
 					}
 					else
 					{
@@ -441,7 +459,55 @@ int CALLBACK WinMain(
 
   				RenderWeirdGradient(&GlobalBackBuffer, BlueOffset, GreenOffset, RedOffset);
 
-  				HDC DeviceContext = GetDC(Window);
+				// DirectSound Output
+				DWORD PlayCursor;
+				DWORD WriteCursor;
+				if(SUCCEEDED(GlobalSecondaryBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor)))
+				{
+					DWORD ByteToLock = RunningSampleIndex*BytesPerSample % SecondaryBufferSize;
+					DWORD BytesToWrite;
+					if(ByteToLock > PlayCursor)
+					{
+						BytesToWrite = (SecondaryBufferSize - ByteToLock);
+						BytesToWrite += PlayCursor;
+					}
+					else
+					{
+						BytesToWrite = PlayCursor - ByteToLock;
+					}
+
+					VOID *Region1;
+					DWORD Region1Size;
+					VOID *Region2;
+					DWORD Region2Size;
+
+					if(SUCCEEDED(GlobalSecondaryBuffer->Lock(ByteToLock, BytesToWrite,
+												&Region1, &Region1Size,
+												&Region2, &Region2Size,
+												0)))
+					{
+						DWORD Region1SampleCount = Region1Size/BytesPerSample;
+						int16 *SampleOut = (int16 *)Region1;
+						for (DWORD SampleIndex = 0; SampleIndex < Region1SampleCount; ++SampleIndex)
+						{
+							int16 SampleValue = ((RunningSampleIndex++ / HalfSquaredWavePeriod) % 2) ? ToneVolume : -ToneVolume;
+							*SampleOut++ = SampleValue;
+							*SampleOut++ = SampleValue;
+						}
+
+						SampleOut = (int16 *)Region2;
+						DWORD Region2SampleCount = Region2Size/BytesPerSample;
+						for (DWORD SampleIndex = 0; SampleIndex < Region2SampleCount; ++SampleIndex)
+						{
+							int16 SampleValue = ((RunningSampleIndex++ / HalfSquaredWavePeriod) % 2) ? ToneVolume : -ToneVolume;
+							*SampleOut++ = SampleValue;
+							*SampleOut++ = SampleValue;
+						}
+
+						GlobalSecondaryBuffer->Unlock(Region1, Region1Size, Region2, Region2Size);
+					}
+				}
+				
   				win32_window_dimension WDimension = Win32GetWindowDimension(Window);
 				Win32DisplayBufferToWindow(DeviceContext, WDimension.Width, WDimension.Height, &GlobalBackBuffer, 0, 0);
 				ReleaseDC(Window, DeviceContext);
