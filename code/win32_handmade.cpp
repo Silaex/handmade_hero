@@ -534,7 +534,8 @@ int CALLBACK WinMain(
 
 
   				//RenderWeirdGradient(&GlobalBackBuffer, BlueOffset, GreenOffset, RedOffset);
-				int16 Samples[(48000/30) * 2];
+				int16 *Samples = (int16 *)VirtualAlloc(0, SoundOutput.SecondaryBufferSize, 
+														MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 				game_sound_output_buffer SoundBuffer = {};
 				SoundBuffer.SamplesPerSecond = SoundOutput.SamplesPerSecond;
 				SoundBuffer.SampleCount = SoundOutput.SamplesPerSecond / 30;
@@ -579,7 +580,6 @@ int CALLBACK WinMain(
 
 				}
 
-				SoundOutput.Tone = (BlueOffset%1024)+1;
 				SoundOutput.WavePeriod = SoundOutput.SamplesPerSecond / SoundOutput.Tone;
 
 				win32_window_dimension WDimension = Win32GetWindowDimension(Window);
